@@ -100,7 +100,7 @@ func TestOptionsShouldReturn204(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		req, err := http.NewRequest(http.MethodOptions, fmt.Sprintf("%s/file", tt.host), nil)
+		req, err := http.NewRequest(http.MethodOptions, fmt.Sprintf("%s/files", tt.host), nil)
 		for k, v := range tt.headers {
 			req.Header.Add(k, v)
 		}
@@ -114,13 +114,54 @@ func TestOptionsShouldReturn204(t *testing.T) {
 		defer res.Body.Close()
 
 		if res.StatusCode != tt.expectedResponseStatus {
-			t.Errorf("OPTIONS /file does not return %v. got=%v", tt.expectedResponseStatus, res.StatusCode)
+			t.Errorf("OPTIONS /files does not return %v. got=%v", tt.expectedResponseStatus, res.StatusCode)
 		}
 
 		for k, v := range tt.expectedResponseHeaders {
 			if res.Header.Get(k) != v {
-				t.Errorf("OPTIONS /file does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
+				t.Errorf("OPTIONS /files does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
 			}
 		}
+	}
+}
+
+func TestCreationShouldReturn201(t *testing.T) {
+	tests := []struct {
+		uploadLength           string
+		uploadMetadata         map[string]string
+		expectedResponseStatus int
+		expectedResponseHeader map[string]string
+	}{
+		{
+			uploadLength: "1000",
+			expectedResponseHeader: map[string]string{
+				"Tus-Resumable": "1.0.0",
+				"Location":      fmt.Sprintf("http://%s/files", serverAddr),
+			},
+			expectedResponseStatus: http.StatusCreated,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(fmt.Sprintf("test #%d - upload length: %s", i, tt.uploadLength), func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/files", serverAddr), nil)
+			if err != nil {
+				t.Fatalf("Fail to create new request. error=%v", err)
+			}
+
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Fail to execute the request. error=%v", err)
+			}
+			defer res.Body.Close()
+
+			if res.StatusCode != tt.expectedResponseStatus {
+				t.Errorf("POST /files does not return %v. got=%v", tt.expectedResponseStatus, res.StatusCode)
+			}
+
+			if res.Header.Get(HEADER_TUS_RESUMABLE) != tt.expectedResponseHeader[HEADER_TUS_RESUMABLE] {
+				t.Errorf("POST /files does not return correct value for header %s, expected=%v. got=%v", HEADER_TUS_RESUMABLE, tt.expectedResponseHeader[HEADER_TUS_RESUMABLE], res.StatusCode)
+			}
+		})
 	}
 }

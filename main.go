@@ -23,6 +23,8 @@ const (
 	HEADER_TUS_VERSION   = "Tus-Version"
 	HEADER_TUS_EXTENSION = "Tus-Extension"
 	HEADER_TUS_MAX_SIZE  = "Tus-Max-Size"
+	HEADER_LOCATION      = "Location"
+	HEADER_UPLOAD_LENGTH = "Upload-Length"
 )
 
 func main() {
@@ -41,11 +43,33 @@ type FileInitResponse struct {
 	ID string `json:"id"`
 }
 
+type File struct {
+	ID   uuid.UUID
+	Size int
+}
+
+func (f *File) setSize(size string) error {
+	if len(size) <= 0 {
+		f.Size = 0
+		return nil
+	}
+	s, err := strconv.Atoi(size)
+	if err != nil {
+		return err
+	}
+	f.Size = s
+	return nil
+}
+
+type Storage map[uuid.UUID]*File
+
 type ServerConfig struct {
 	UploadDir string // the directory wher all file is being uploaded to
 }
 
 func buildServeMux(config *ServerConfig) *http.ServeMux {
+	storage := make(Storage)
+
 	mux := http.NewServeMux()
 	// POST /file => create session
 	mux.HandleFunc("POST /file", func(w http.ResponseWriter, r *http.Request) {
@@ -76,12 +100,29 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 	})
 
 	// Options
-	mux.HandleFunc("OPTIONS /file", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("OPTIONS /files", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
 		w.Header().Set(HEADER_TUS_VERSION, TUS_PROTOCOL_VERSION)
-		w.Header().Add(HEADER_TUS_EXTENSION, "creation")
+		w.Header().Set(HEADER_TUS_EXTENSION, "creation")
 		w.Header().Set(HEADER_TUS_MAX_SIZE, strconv.Itoa(int(MAX_SIZE)))
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Creation
+	mux.HandleFunc("POST /files", func(w http.ResponseWriter, r *http.Request) {
+		uploadLength := r.Header.Get(HEADER_UPLOAD_LENGTH)
+		id, err := uuid.NewUUID()
+		if err != nil {
+			slog.Error("Failed to generate new file id", slog.Any("Error", err))
+			http.Error(w, "Failed allocating new file id", http.StatusInternalServerError)
+		}
+		f := &File{
+			ID: id,
+		}
+		f.setSize(uploadLength)
+		storage[id] = f
+		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+		w.WriteHeader(http.StatusCreated)
 	})
 
 	// Head => show status
