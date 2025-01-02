@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 )
 
 var serverAddr, uploadDir string
+var port = 1071
 
 func TestMain(m *testing.M) {
 	serverAddr = "localhost:1071"
@@ -21,6 +24,8 @@ func TestMain(m *testing.M) {
 	// run server
 	mux := buildServeMux(&ServerConfig{
 		UploadDir: uploadDir,
+		Host:      "localhost",
+		Port:      port,
 	})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -125,14 +130,16 @@ func TestOptionsShouldReturn204(t *testing.T) {
 	}
 }
 
-func TestCreationShouldReturn201(t *testing.T) {
+func TestCreation(t *testing.T) {
 	tests := []struct {
+		host                   string
 		uploadLength           string
 		uploadMetadata         map[string]string
 		expectedResponseStatus int
 		expectedResponseHeader map[string]string
 	}{
 		{
+			host:         fmt.Sprintf("http://%s/files", serverAddr),
 			uploadLength: "1000",
 			expectedResponseHeader: map[string]string{
 				"Tus-Resumable": "1.0.0",
@@ -140,11 +147,20 @@ func TestCreationShouldReturn201(t *testing.T) {
 			},
 			expectedResponseStatus: http.StatusCreated,
 		},
+		{
+			host:         fmt.Sprintf("http://%s/files", serverAddr),
+			uploadLength: strconv.Itoa(2 * 1024 * 1024 * 1024),
+			expectedResponseHeader: map[string]string{
+				"Tus-Resumable": "1.0.0",
+			},
+			expectedResponseStatus: http.StatusRequestEntityTooLarge,
+		},
 	}
 
 	for i, tt := range tests {
 		t.Run(fmt.Sprintf("test #%d - upload length: %s", i, tt.uploadLength), func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/files", serverAddr), nil)
+			req, err := http.NewRequest(http.MethodPost, tt.host, nil)
+			req.Header.Set(HEADER_UPLOAD_LENGTH, tt.uploadLength)
 			if err != nil {
 				t.Fatalf("Fail to create new request. error=%v", err)
 			}
@@ -160,7 +176,21 @@ func TestCreationShouldReturn201(t *testing.T) {
 			}
 
 			if res.Header.Get(HEADER_TUS_RESUMABLE) != tt.expectedResponseHeader[HEADER_TUS_RESUMABLE] {
-				t.Errorf("POST /files does not return correct value for header %s, expected=%v. got=%v", HEADER_TUS_RESUMABLE, tt.expectedResponseHeader[HEADER_TUS_RESUMABLE], res.StatusCode)
+				t.Errorf("POST /files does not return correct value for header %s, expected=%v. got=%v", HEADER_TUS_RESUMABLE, tt.expectedResponseHeader[HEADER_TUS_RESUMABLE], res.Header.Get(HEADER_TUS_RESUMABLE))
+			}
+
+			if res.StatusCode == http.StatusCreated {
+				location := res.Header.Get(HEADER_LOCATION)
+				lastSlashIndex := strings.LastIndex(location, "/")
+				baseUrl := location[:lastSlashIndex]
+				id := location[lastSlashIndex+1:]
+				if baseUrl != tt.host {
+					t.Errorf("POST /files does not return correct header %s base url, expected=%s. got=%s", HEADER_LOCATION, tt.host, baseUrl)
+				}
+				if _, err := uuid.Parse(id); err != nil {
+					t.Errorf("POST /files does not return correct file id. got error=%v", err)
+				}
+
 			}
 		})
 	}
