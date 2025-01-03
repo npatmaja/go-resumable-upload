@@ -195,3 +195,74 @@ func TestCreation(t *testing.T) {
 		})
 	}
 }
+
+func TestHead(t *testing.T) {
+	// initiate test data
+	host := fmt.Sprintf("http://%s/files", serverAddr)
+	postReq, err := http.NewRequest(http.MethodPost, host, nil)
+	if err != nil {
+		t.Fatalf("Fail to create test data. Error=%v", err)
+	}
+	postReq.Header.Set(HEADER_UPLOAD_LENGTH, "1024")
+	postRes, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("Fail to create test data. Error=%v", err)
+	}
+	if postRes.StatusCode != http.StatusCreated {
+		t.Fatalf("Fail to create test data. Got status=%d", postRes.StatusCode)
+	}
+
+	location := postRes.Header.Get(HEADER_LOCATION)
+	lastSlashIdx := strings.LastIndex(location, "/")
+	fileId := location[lastSlashIdx+1:]
+
+	tests := []struct {
+		testName               string
+		host                   string
+		fileId                 string
+		expectedResponseStatus int
+		expectedHeader         map[string]string
+	}{
+		{
+			testName:               "test success after file creation",
+			host:                   fmt.Sprintf("http://%s/files", serverAddr),
+			fileId:                 fileId,
+			expectedResponseStatus: http.StatusOK,
+			expectedHeader: map[string]string{
+				"Upload-Offset": "0",
+			},
+		},
+		{
+			testName:               "test file not found",
+			host:                   fmt.Sprintf("http://%s/files", serverAddr),
+			fileId:                 "dummy-not-found",
+			expectedResponseStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodHead, fmt.Sprintf("%s/%s", tt.host, tt.fileId), nil)
+			if err != nil {
+				t.Fatalf("Fail to create HEAD request. error=%v", err)
+			}
+			req.Header.Set(HEADER_TUS_RESUMABLE, "1.0.0")
+			req.Header.Set("Host", serverAddr)
+
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Fail to execute HEAD request. error=%v", err)
+			}
+
+			if res.StatusCode != tt.expectedResponseStatus {
+				t.Errorf("HEAD /files/%s does not return %v. got=%v", tt.fileId, tt.expectedResponseStatus, res.StatusCode)
+			}
+
+			for k, v := range tt.expectedHeader {
+				if res.Header.Get(k) != v {
+					t.Errorf("HEAD /files does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
+				}
+			}
+		})
+	}
+}

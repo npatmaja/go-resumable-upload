@@ -26,6 +26,7 @@ const (
 	HEADER_TUS_MAX_SIZE  = "Tus-Max-Size"
 	HEADER_LOCATION      = "Location"
 	HEADER_UPLOAD_LENGTH = "Upload-Length"
+	HEADER_UPLOAD_OFFSET = "Upload-Offset"
 )
 
 func main() {
@@ -51,7 +52,7 @@ type File struct {
 	Size int
 }
 
-type Storage map[uuid.UUID]*File
+type Storage map[string]*File
 
 type ServerConfig struct {
 	UploadDir string // the directory wher all file is being uploaded to
@@ -139,13 +140,24 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			ID:   id,
 			Size: l,
 		}
-		storage[id] = f
+		storage[id.String()] = f
 		w.Header().Set(HEADER_LOCATION, fmt.Sprintf("%s://%s:%d/files/%s", protocol, host, port, id.String()))
 		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
 		w.WriteHeader(http.StatusCreated)
 	})
 
 	// Head => show status
+	mux.HandleFunc("HEAD /files/{id}", func(w http.ResponseWriter, r *http.Request) {
+		fileId := r.PathValue("id")
+		file := storage[fileId]
+		if file == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+		w.Header().Set(HEADER_UPLOAD_OFFSET, "0")
+		w.WriteHeader(http.StatusOK)
+	})
 
 	// Patch => upload file (maybe in chunk)
 	return mux
