@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/google/uuid"
 )
+
+const content = `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque vel lobortis tortor, id venenatis arcu. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. In ut arcu ac erat dapibus volutpat ut vel eros. Vestibulum sed felis ultricies, finibus urna ac, ultrices risus. Suspendisse euismod interdum facilisis. Nullam dictum at ex sit amet pulvinar. Pellentesque augue ipsum, tincidunt viverra ullamcorper quis, iaculis vitae ipsum. Sed eget egestas ipsum, eu auctor est.
+
+Fusce sollicitudin, magna vitae gravida efficitur, libero lorem blandit sem, sagittis imperdiet neque ipsum a nulla. Pellentesque sit amet nunc quam. Etiam vel leo luctus, consequat tellus eget, accumsan ipsum. Aenean eu feugiat orci. Suspendisse feugiat erat in magna vulputate placerat. In et feugiat nunc. Sed et nibh fermentum, volutpat est quis, scelerisque elit. Phasellus ut porttitor ex. Praesent vel nisi eros. Curabitur eget nisi et leo imperdiet placerat. Mauris sapien dui accumsan.`
 
 var serverAddr, uploadDir string
 var port = 1071
@@ -261,6 +266,175 @@ func TestHead(t *testing.T) {
 			for k, v := range tt.expectedHeader {
 				if res.Header.Get(k) != v {
 					t.Errorf("HEAD /files does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
+				}
+			}
+		})
+	}
+}
+
+func TestPatch(t *testing.T) {
+	// initiate test data
+	host := fmt.Sprintf("http://%s/files", serverAddr)
+	postReq, err := http.NewRequest(http.MethodPost, host, nil)
+	if err != nil {
+		t.Fatalf("Fail to create test data. Error=%v", err)
+	}
+	postReq.Header.Set(HEADER_UPLOAD_LENGTH, "1000")
+	postRes, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("Fail to create test data. Error=%v", err)
+	}
+	if postRes.StatusCode != http.StatusCreated {
+		t.Fatalf("Fail to create test data. Got status=%d", postRes.StatusCode)
+	}
+
+	location := postRes.Header.Get(HEADER_LOCATION)
+	lastSlashIdx := strings.LastIndex(location, "/")
+	fileId := location[lastSlashIdx+1:]
+
+	tests := []struct {
+		testName               string
+		host                   string
+		fileId                 string
+		offset                 int
+		contentLength          int
+		requestHeader          map[string]string
+		body                   []byte
+		expectedResponseStatus int
+		expectedResponseHeader map[string]string
+	}{
+		{
+			testName:      "patch content to 400 bytes",
+			host:          host,
+			fileId:        fileId,
+			offset:        0,
+			contentLength: 400,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/offset+octet-stream",
+				"Content-Length":     "400",
+				HEADER_UPLOAD_OFFSET: "0",
+			},
+			expectedResponseStatus: http.StatusNoContent,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+				HEADER_UPLOAD_OFFSET: "400",
+			},
+		},
+		{
+			testName:      "patch content to 600 bytes",
+			host:          host,
+			fileId:        fileId,
+			offset:        400,
+			contentLength: 200,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/offset+octet-stream",
+				"Content-Length":     "200",
+				HEADER_UPLOAD_OFFSET: "400",
+			},
+			expectedResponseStatus: http.StatusNoContent,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+				HEADER_UPLOAD_OFFSET: "600",
+			},
+		},
+		{
+			testName:      "patch content 1000 bytes",
+			host:          host,
+			fileId:        fileId,
+			offset:        600,
+			contentLength: 400,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/offset+octet-stream",
+				"Content-Length":     "400",
+				HEADER_UPLOAD_OFFSET: "600",
+			},
+			expectedResponseStatus: http.StatusNoContent,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+				HEADER_UPLOAD_OFFSET: "1000",
+			},
+		},
+		{
+			testName:      "patch content with wrong offset",
+			host:          host,
+			fileId:        fileId,
+			offset:        400,
+			contentLength: 200,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/offset+octet-stream",
+				"Content-Length":     "200",
+				HEADER_UPLOAD_OFFSET: "400",
+			},
+			expectedResponseStatus: http.StatusConflict,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+			},
+		},
+		{
+			testName:      "patch unknown file",
+			host:          host,
+			fileId:        "unknown-id",
+			offset:        400,
+			contentLength: 200,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/offset+octet-stream",
+				"Content-Length":     "200",
+				HEADER_UPLOAD_OFFSET: "400",
+			},
+			expectedResponseStatus: http.StatusNotFound,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+			},
+		},
+		{
+			testName:      "patch with wrong Content-Type",
+			host:          host,
+			fileId:        fileId,
+			offset:        400,
+			contentLength: 200,
+			requestHeader: map[string]string{
+				"Host":               serverAddr,
+				"Content-Type":       "application/octet-stream",
+				"Content-Length":     "200",
+				HEADER_UPLOAD_OFFSET: "400",
+			},
+			expectedResponseStatus: http.StatusUnsupportedMediaType,
+			expectedResponseHeader: map[string]string{
+				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
+			},
+		},
+	}
+
+	byteContent := []byte(content)
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			c := byteContent[tt.offset : tt.offset+tt.contentLength]
+			req, err := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/%s", tt.host, tt.fileId), bytes.NewBuffer(c))
+			if err != nil {
+				t.Fatalf("Fail to create PATCH request. error=%v", err)
+			}
+
+			for k, v := range tt.requestHeader {
+				req.Header.Set(k, v)
+			}
+
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Fail to execute PATCH request. error=%v", err)
+			}
+
+			if res.StatusCode != tt.expectedResponseStatus {
+				t.Errorf("PATCH /files/%s does not return %v. got=%v", tt.fileId, tt.expectedResponseStatus, res.StatusCode)
+			}
+
+			for k, v := range tt.expectedResponseHeader {
+				if res.Header.Get(k) != v {
+					t.Errorf("PATCH /files does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
 				}
 			}
 		})

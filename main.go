@@ -6,27 +6,32 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"github.com/google/uuid"
 )
 
 const (
-	MAX_SIZE             int = 1024 * 1024 * 1024
-	TUS_PROTOCOL_VERSION     = "1.0.0"
+	MAX_SIZE                         int = 1024 * 1024 * 1024
+	TUS_PROTOCOL_VERSION                 = "1.0.0"
+	CONTENT_TYPE_OFFSET_OCTET_STREAM     = "application/offset+octet-stream"
 
 	//	headers
-	HEADER_TUS_RESUMABLE = "Tus-Resumable"
-	HEADER_TUS_VERSION   = "Tus-Version"
-	HEADER_TUS_EXTENSION = "Tus-Extension"
-	HEADER_TUS_MAX_SIZE  = "Tus-Max-Size"
-	HEADER_LOCATION      = "Location"
-	HEADER_UPLOAD_LENGTH = "Upload-Length"
-	HEADER_UPLOAD_OFFSET = "Upload-Offset"
+	HEADER_TUS_RESUMABLE  = "Tus-Resumable"
+	HEADER_TUS_VERSION    = "Tus-Version"
+	HEADER_TUS_EXTENSION  = "Tus-Extension"
+	HEADER_TUS_MAX_SIZE   = "Tus-Max-Size"
+	HEADER_LOCATION       = "Location"
+	HEADER_UPLOAD_LENGTH  = "Upload-Length"
+	HEADER_UPLOAD_OFFSET  = "Upload-Offset"
+	HEADER_CONTENT_LENGTH = "Content-Length"
+	HEADER_CONTENT_TYPE   = "Content-Type"
 )
 
 func main() {
@@ -48,8 +53,17 @@ type FileInitResponse struct {
 }
 
 type File struct {
-	ID   uuid.UUID
-	Size int
+	ID     uuid.UUID
+	Size   int
+	Offset int
+	mu     sync.Mutex
+}
+
+func (f *File) calculateOffset(contentLength int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.Offset = f.Offset + contentLength
 }
 
 type Storage map[string]*File
@@ -160,5 +174,50 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 	})
 
 	// Patch => upload file (maybe in chunk)
+	mux.HandleFunc("PATCH /files/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+		contentType := r.Header.Get(HEADER_CONTENT_TYPE)
+		if contentType != CONTENT_TYPE_OFFSET_OCTET_STREAM {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
+
+		fileId := r.PathValue("id")
+		file := storage[fileId]
+		if file == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		offsetValue := r.Header.Get(HEADER_UPLOAD_OFFSET)
+		if len(offsetValue) <= 0 {
+			offsetValue = "0"
+		}
+		offset, err := strconv.Atoi(offsetValue)
+
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if offset != file.Offset {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		content, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		// calculate new offset
+		file.calculateOffset(len(content))
+		w.Header().Set(HEADER_UPLOAD_OFFSET, strconv.Itoa(file.Offset))
+
+		// write the byte
+
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	return mux
 }
