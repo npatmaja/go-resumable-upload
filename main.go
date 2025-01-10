@@ -4,6 +4,7 @@ package main
 // use tus.io protocol
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 
 const (
 	MAX_SIZE                         int = 1024 * 1024 * 1024
+	CHUNK_SIZE                       int = 1024 * 1024
 	TUS_PROTOCOL_VERSION                 = "1.0.0"
 	CONTENT_TYPE_OFFSET_OCTET_STREAM     = "application/offset+octet-stream"
 
@@ -76,7 +78,7 @@ func (f *File) create() error {
 	return nil
 }
 
-func (f *File) write(content []byte) error {
+func (f *File) write(body io.Reader) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -85,18 +87,40 @@ func (f *File) write(content []byte) error {
 	path := filepath.Join(uploadDir, f.ID.String())
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		slog.Error("Failed to open file", slog.String("Path", path), slog.Any("Error", err))
 		return err
 	}
 	defer file.Close()
-	_, err = file.Write(content)
-	if err != nil {
-		slog.Error("Failed to write to file", slog.String("Path", path), slog.Any("Error", err))
-		return err
+
+	// write per 1024 * 1024 byte
+	reader := bufio.NewReader(body)
+	buff := make([]byte, CHUNK_SIZE)
+
+	for {
+		n, err := reader.Read(buff)
+		if err != nil {
+			if err != io.EOF {
+				return fmt.Errorf("Error reading data %v", err)
+			}
+
+			// write the last chunk
+			if err = f.writeToFile(file, buff[:n]); err != nil {
+				return err
+			}
+			break
+		}
+		if err = f.writeToFile(file, buff[:n]); err != nil {
+			return err
+		}
 	}
 
-	// update offset
-	f.Offset = f.Offset + len(content)
+	return nil
+}
+
+func (f *File) writeToFile(file *os.File, buff []byte) error {
+	if _, err := file.Write(buff); err != nil {
+		return fmt.Errorf("Error writing data to file %v", err)
+	}
+	f.Offset = f.Offset + len(buff)
 	return nil
 }
 
@@ -246,15 +270,13 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
-		content, err := io.ReadAll(r.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
 
 		// write to temp file
-		// file.calculateOffset(len(content))
-		file.write(content)
+		if err = file.write(r.Body); err != nil {
+			slog.Error("Fail to write r.Body", slog.Any("Error", err))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set(HEADER_UPLOAD_OFFSET, strconv.Itoa(file.Offset))
 
 		w.WriteHeader(http.StatusNoContent)
