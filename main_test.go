@@ -19,16 +19,16 @@ const content = `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisqu
 
 Fusce sollicitudin, magna vitae gravida efficitur, libero lorem blandit sem, sagittis imperdiet neque ipsum a nulla. Pellentesque sit amet nunc quam. Etiam vel leo luctus, consequat tellus eget, accumsan ipsum. Aenean eu feugiat orci. Suspendisse feugiat erat in magna vulputate placerat. In et feugiat nunc. Sed et nibh fermentum, volutpat est quis, scelerisque elit. Phasellus ut porttitor ex. Praesent vel nisi eros. Curabitur eget nisi et leo imperdiet placerat. Mauris sapien dui accumsan.`
 
-var serverAddr, uploadDir string
+var serverAddr, tempUploadDir string
 var port = 1071
 
 func TestMain(m *testing.M) {
 	serverAddr = "localhost:1071"
-	uploadDir = os.TempDir()
+	tempUploadDir = os.TempDir()
 
 	// run server
 	mux := buildServeMux(&ServerConfig{
-		UploadDir: uploadDir,
+		UploadDir: tempUploadDir,
 		Host:      "localhost",
 		Port:      port,
 	})
@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 	exit := m.Run()
 
 	// clean up
-	os.RemoveAll(uploadDir)
+	os.RemoveAll(tempUploadDir)
 
 	os.Exit(exit)
 }
@@ -81,7 +81,7 @@ func TestFileShouldReturn201WithNewFileId(t *testing.T) {
 	}
 
 	// create a temp directory
-	dir := filepath.Join(uploadDir, r.ID)
+	dir := filepath.Join(tempUploadDir, r.ID)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Errorf("POST /file does not create the %s dir. got=%v", r.ID, err)
 	}
@@ -302,6 +302,7 @@ func TestPatch(t *testing.T) {
 		body                   []byte
 		expectedResponseStatus int
 		expectedResponseHeader map[string]string
+		assertUploadedFile     bool
 	}{
 		{
 			testName:      "patch content to 400 bytes",
@@ -320,6 +321,7 @@ func TestPatch(t *testing.T) {
 				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
 				HEADER_UPLOAD_OFFSET: "400",
 			},
+			assertUploadedFile: true,
 		},
 		{
 			testName:      "patch content to 600 bytes",
@@ -338,6 +340,7 @@ func TestPatch(t *testing.T) {
 				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
 				HEADER_UPLOAD_OFFSET: "600",
 			},
+			assertUploadedFile: true,
 		},
 		{
 			testName:      "patch content 1000 bytes",
@@ -356,6 +359,7 @@ func TestPatch(t *testing.T) {
 				HEADER_TUS_RESUMABLE: TUS_PROTOCOL_VERSION,
 				HEADER_UPLOAD_OFFSET: "1000",
 			},
+			assertUploadedFile: true,
 		},
 		{
 			testName:      "patch content with wrong offset",
@@ -435,6 +439,21 @@ func TestPatch(t *testing.T) {
 			for k, v := range tt.expectedResponseHeader {
 				if res.Header.Get(k) != v {
 					t.Errorf("PATCH /files does not return correct value for header %v, expected=%v. got=%v", k, v, res.Header.Get(k))
+				}
+			}
+
+			// assert uploaded file
+			if tt.assertUploadedFile {
+				expectedContent := byteContent[:tt.offset+tt.contentLength]
+
+				path := filepath.Join(tempUploadDir, tt.fileId)
+				uploaded, err := os.ReadFile(path)
+				if err != nil {
+					t.Errorf("PATCH /files does not write to file %v. error=%v", path, err)
+				}
+
+				if string(uploaded) != string(expectedContent) {
+					t.Errorf("PATCH /files does not upload the same byte, expected=%v. got=%v", expectedContent, uploaded)
 				}
 			}
 		})

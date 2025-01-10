@@ -66,6 +66,40 @@ func (f *File) calculateOffset(contentLength int) {
 	f.Offset = f.Offset + contentLength
 }
 
+func (f *File) create() error {
+	path := filepath.Join(uploadDir, f.ID.String())
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return nil
+}
+
+func (f *File) write(content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// write to temp file, assumption is the file
+	// has been created when POST /files
+	path := filepath.Join(uploadDir, f.ID.String())
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Error("Failed to open file", slog.String("Path", path), slog.Any("Error", err))
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(content)
+	if err != nil {
+		slog.Error("Failed to write to file", slog.String("Path", path), slog.Any("Error", err))
+		return err
+	}
+
+	// update offset
+	f.Offset = f.Offset + len(content)
+	return nil
+}
+
 type Storage map[string]*File
 
 type ServerConfig struct {
@@ -74,6 +108,8 @@ type ServerConfig struct {
 	Port      int
 	Protocol  string
 }
+
+var uploadDir = "./temp"
 
 func buildServeMux(config *ServerConfig) *http.ServeMux {
 	var host, protocol string
@@ -88,6 +124,9 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 		protocol = "http"
 	} else {
 		protocol = config.Protocol
+	}
+	if len(config.UploadDir) > 0 {
+		uploadDir = config.UploadDir
 	}
 
 	mux := http.NewServeMux()
@@ -154,6 +193,9 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			ID:   id,
 			Size: l,
 		}
+		if err = f.create(); err != nil {
+			slog.Error("Failed to create new file", slog.Any("Error", err))
+		}
 		storage[id.String()] = f
 		w.Header().Set(HEADER_LOCATION, fmt.Sprintf("%s://%s:%d/files/%s", protocol, host, port, id.String()))
 		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
@@ -210,11 +252,10 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			return
 		}
 
-		// calculate new offset
-		file.calculateOffset(len(content))
+		// write to temp file
+		// file.calculateOffset(len(content))
+		file.write(content)
 		w.Header().Set(HEADER_UPLOAD_OFFSET, strconv.Itoa(file.Offset))
-
-		// write the byte
 
 		w.WriteHeader(http.StatusNoContent)
 	})
