@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -28,15 +31,16 @@ const (
 	CONTENT_TYPE_OFFSET_OCTET_STREAM     = "application/offset+octet-stream"
 
 	//	headers
-	HEADER_TUS_RESUMABLE  = "Tus-Resumable"
-	HEADER_TUS_VERSION    = "Tus-Version"
-	HEADER_TUS_EXTENSION  = "Tus-Extension"
-	HEADER_TUS_MAX_SIZE   = "Tus-Max-Size"
-	HEADER_LOCATION       = "Location"
-	HEADER_UPLOAD_LENGTH  = "Upload-Length"
-	HEADER_UPLOAD_OFFSET  = "Upload-Offset"
-	HEADER_CONTENT_LENGTH = "Content-Length"
-	HEADER_CONTENT_TYPE   = "Content-Type"
+	HEADER_TUS_RESUMABLE   = "Tus-Resumable"
+	HEADER_TUS_VERSION     = "Tus-Version"
+	HEADER_TUS_EXTENSION   = "Tus-Extension"
+	HEADER_TUS_MAX_SIZE    = "Tus-Max-Size"
+	HEADER_LOCATION        = "Location"
+	HEADER_UPLOAD_LENGTH   = "Upload-Length"
+	HEADER_UPLOAD_OFFSET   = "Upload-Offset"
+	HEADER_CONTENT_LENGTH  = "Content-Length"
+	HEADER_CONTENT_TYPE    = "Content-Type"
+	HEADER_UPLOAD_METADATA = "Upload-Metadata"
 )
 
 func main() {
@@ -58,10 +62,11 @@ type FileInitResponse struct {
 }
 
 type File struct {
-	ID     uuid.UUID
-	Size   int
-	Offset int
-	mu     sync.Mutex
+	ID       uuid.UUID
+	Size     int
+	Offset   int
+	mu       sync.Mutex
+	Metadata string
 }
 
 func (f *File) calculateOffset(contentLength int) {
@@ -184,17 +189,35 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
 		}
+
+		// validate metadata
+		metadata := r.Header.Get(HEADER_UPLOAD_METADATA)
+		if err = validateMetadata(metadata); err != nil {
+			w.Header().Set(HEADER_TUS_MAX_SIZE, strconv.Itoa(MAX_SIZE))
+			w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
 		id, err := uuid.NewUUID()
 		if err != nil {
 			slog.Error("Failed to generate new file id", slog.Any("Error", err))
-			http.Error(w, "Failed allocating new file id", http.StatusInternalServerError)
+			w.Header().Set(HEADER_TUS_MAX_SIZE, strconv.Itoa(MAX_SIZE))
+			w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		f := &File{
-			ID:   id,
-			Size: l,
+			ID:       id,
+			Size:     l,
+			Metadata: metadata,
 		}
 		if err = f.create(); err != nil {
 			slog.Error("Failed to create new file", slog.Any("Error", err))
+			w.Header().Set(HEADER_TUS_MAX_SIZE, strconv.Itoa(MAX_SIZE))
+			w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		storage[id.String()] = f
 		w.Header().Set(HEADER_LOCATION, fmt.Sprintf("%s://%s:%d/files/%s", protocol, host, port, id.String()))
@@ -212,6 +235,7 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 		}
 		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
 		w.Header().Set(HEADER_UPLOAD_OFFSET, strconv.Itoa(file.Offset))
+		w.Header().Set(HEADER_UPLOAD_METADATA, file.Metadata)
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -259,4 +283,36 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 	})
 
 	return mux
+}
+
+func validateMetadata(metadata string) error {
+	pairs := strings.Split(metadata, ",")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		var k, v string
+		if strings.Contains(pair, " ") {
+			p := strings.SplitN(pair, " ", 2)
+			k = strings.TrimSpace(p[0])
+			v = strings.TrimSpace(p[1])
+		} else {
+			k = pair
+		}
+
+		// validate base64
+		if v != "" {
+			_, err := base64.StdEncoding.DecodeString(v)
+			if err != nil {
+				return err
+			}
+		}
+
+		// validate key is ASCII chars
+		for s := range k {
+			if s > unicode.MaxASCII {
+				return fmt.Errorf("%c is not ASCII char", s)
+			}
+		}
+	}
+
+	return nil
 }
