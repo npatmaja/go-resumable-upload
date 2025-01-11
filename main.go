@@ -235,7 +235,7 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 			return
 		}
 		w.Header().Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
-		w.Header().Set(HEADER_UPLOAD_OFFSET, "0")
+		w.Header().Set(HEADER_UPLOAD_OFFSET, strconv.Itoa(file.Offset))
 		w.WriteHeader(http.StatusOK)
 	})
 

@@ -303,6 +303,7 @@ func TestPatch(t *testing.T) {
 		expectedResponseStatus int
 		expectedResponseHeader map[string]string
 		assertUploadedFile     bool
+		assertHead             bool
 	}{
 		{
 			testName:      "patch content to 400 bytes",
@@ -322,6 +323,7 @@ func TestPatch(t *testing.T) {
 				HEADER_UPLOAD_OFFSET: "400",
 			},
 			assertUploadedFile: true,
+			assertHead:         true,
 		},
 		{
 			testName:      "patch content to 600 bytes",
@@ -341,6 +343,7 @@ func TestPatch(t *testing.T) {
 				HEADER_UPLOAD_OFFSET: "600",
 			},
 			assertUploadedFile: true,
+			assertHead:         true,
 		},
 		{
 			testName:      "patch content 1000 bytes",
@@ -360,6 +363,7 @@ func TestPatch(t *testing.T) {
 				HEADER_UPLOAD_OFFSET: "1000",
 			},
 			assertUploadedFile: true,
+			assertHead:         true,
 		},
 		{
 			testName:      "patch content with wrong offset",
@@ -454,6 +458,26 @@ func TestPatch(t *testing.T) {
 
 				if string(uploaded) != string(expectedContent) {
 					t.Errorf("PATCH /files does not upload the same byte, expected=%v. got=%v", expectedContent, uploaded)
+				}
+			}
+
+			// assert head
+			if tt.assertHead {
+				req, err = http.NewRequest(http.MethodHead, fmt.Sprintf("%s/%s", tt.host, tt.fileId), nil)
+				if err != nil {
+					t.Fatalf("Fail to create PATCH request. error=%v", err)
+				}
+				req.Header.Set("Host", serverAddr)
+				req.Header.Set(HEADER_TUS_RESUMABLE, TUS_PROTOCOL_VERSION)
+				res, err = http.DefaultClient.Do(req)
+
+				if res.StatusCode != http.StatusOK {
+					t.Errorf("Fail when calling HEAD /files after PATCH. expected=%v. got=%v", http.StatusOK, res.StatusCode)
+				}
+
+				uploadOffset := res.Header.Get(HEADER_UPLOAD_OFFSET)
+				if uploadOffset != strconv.Itoa(tt.offset+tt.contentLength) {
+					t.Errorf("PATCH /files got wrong HEAD upload offset, expected=%v. actual=%v", tt.offset+tt.contentLength, uploadOffset)
 				}
 			}
 		})
