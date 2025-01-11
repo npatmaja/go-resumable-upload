@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +16,10 @@ import (
 
 	"github.com/google/uuid"
 )
+
+var SUPPORTED_EXTENSIONS = []string{
+	"creation",
+}
 
 const (
 	MAX_SIZE                         int = 1024 * 1024 * 1024
@@ -154,33 +157,6 @@ func buildServeMux(config *ServerConfig) *http.ServeMux {
 	}
 
 	mux := http.NewServeMux()
-	// POST /file => create session
-	mux.HandleFunc("POST /file", func(w http.ResponseWriter, r *http.Request) {
-		id, err := uuid.NewUUID()
-		if err != nil {
-			slog.Error("Failed to generate new id", slog.Any("Error", err))
-			http.Error(w, "Error allocating id", http.StatusInternalServerError)
-			return
-		}
-
-		dir := filepath.Join(config.UploadDir, id.String())
-		if err = os.MkdirAll(dir, 0666); err != nil {
-			slog.Error("Failed to create file directory", slog.String("dir", dir), slog.Any("Error", err))
-			http.Error(w, "Error allocating storage", http.StatusInternalServerError)
-			return
-		}
-
-		resp := FileInitResponse{ID: id.String()}
-		jsonResponse, err := json.Marshal(resp)
-		if err != nil {
-			slog.Error("Failed to marshal json response", slog.Any("Error", err))
-			http.Error(w, "Error allocating id", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Add("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		w.Write(jsonResponse)
-	})
 
 	// Options
 	mux.HandleFunc("OPTIONS /files", func(w http.ResponseWriter, r *http.Request) {

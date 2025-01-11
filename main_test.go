@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -45,46 +44,6 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(tempUploadDir)
 
 	os.Exit(exit)
-}
-
-func TestFileShouldReturn201WithNewFileId(t *testing.T) {
-	res, err := http.DefaultClient.Post(
-		fmt.Sprintf("http://%s/file", serverAddr),
-		"",
-		nil,
-	)
-	if err != nil {
-		t.Errorf("Failed to call /file. Error %v", err)
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != 201 {
-		t.Errorf("POST /file does not return 201. got=%v", res.StatusCode)
-	}
-
-	if res.Status != "201 Created" {
-		t.Errorf("POST /file does not return 201 Created. got=%v", res.Status)
-	}
-
-	if res.Header.Get("Content-Type") != "application/json" {
-		t.Errorf("POST /file does not return Content-Type [application/json]. got=%v", res.Header.Get("Content-Type"))
-	}
-
-	var r FileInitResponse
-	err = json.NewDecoder(res.Body).Decode(&r)
-	if err != nil {
-		t.Errorf("POST /file does not return correct json. got=%v", err)
-	}
-	_, err = uuid.Parse(r.ID)
-	if err != nil {
-		t.Errorf("POST /file does not return correct uuid. got=%v", err)
-	}
-
-	// create a temp directory
-	dir := filepath.Join(tempUploadDir, r.ID)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		t.Errorf("POST /file does not create the %s dir. got=%v", r.ID, err)
-	}
 }
 
 func TestOptionsShouldReturn204(t *testing.T) {
