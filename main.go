@@ -12,10 +12,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -46,17 +48,26 @@ const (
 )
 
 func main() {
-	mux := buildServeMux(&ServerConfig{
-		UploadDir: "upload",
-		Host:      "localhost",
-		Protocol:  "http",
-	})
+	cfg := &ServerConfig{
+		UploadDir:              "upload",
+		Host:                   "localhost",
+		Port:                   8080,
+		Protocol:               "http",
+		ShutdownTimeoutSeconds: 10,
+		ReadTimeout:            60 * time.Second,
+		WriteTimeout:           60 * time.Second,
+		IdleTimeout:            30 * time.Second,
+	}
+	mux := buildServeMux(cfg)
+	server := NewServer(cfg, mux)
+
+	server.Start()
 
 	// starting the app
-	slog.Info("running app at :1080")
-	if err := http.ListenAndServe(":1080", mux); err != nil {
-		panic(err)
-	}
+	// slog.Info("running app at :1080")
+	// if err := http.ListenAndServe(":1080", mux); err != nil {
+	// 	panic(err)
+	// }
 }
 
 type FileInitResponse struct {
@@ -142,6 +153,10 @@ type ServerConfig struct {
 	Port                   int
 	Protocol               string
 	ShutdownTimeoutSeconds int
+	ReadTimeout            time.Duration
+	WriteTimeout           time.Duration
+	ReadHeaderTimeout      time.Duration
+	IdleTimeout            time.Duration
 }
 
 var uploadDir = "./temp"
@@ -153,8 +168,12 @@ type Server struct {
 
 func NewServer(config *ServerConfig, handler *http.ServeMux) *Server {
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", config.Port),
-		Handler: handler,
+		Addr:              fmt.Sprintf("%s:%d", config.Host, config.Port),
+		Handler:           handler,
+		ReadTimeout:       config.ReadTimeout,
+		WriteTimeout:      config.WriteTimeout,
+		ReadHeaderTimeout: config.ReadHeaderTimeout,
+		IdleTimeout:       config.IdleTimeout,
 	}
 	return &Server{
 		httpServer:             httpServer,
@@ -165,6 +184,7 @@ func NewServer(config *ServerConfig, handler *http.ServeMux) *Server {
 func (s *Server) Start() error {
 	errorChan := make(chan error, 1)
 	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		slog.Info("Starting server at", slog.String("Addr", s.httpServer.Addr))
@@ -181,6 +201,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("Fail to start the server. error=%v", err)
 	case sig := <-shutdown:
 		slog.Info("Shutdown signal received: %v", slog.Any("sig", sig))
+		// add cleanup resources here if necessary, i.e., close database connections,
+		// close cache connections, etc
 		return s.Shutdown()
 	}
 }
@@ -189,6 +211,7 @@ func (s *Server) Start() error {
 // shutdown is complete, Shutdown returns the context's error but it does not
 // close/cancel the running requests
 func (s *Server) Shutdown() error {
+	slog.Info("Initiating shutdown", slog.Time("now", time.Now()))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.ShutdownTimeoutSeconds)*time.Second)
 	defer cancel()
 
