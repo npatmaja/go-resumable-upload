@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
@@ -135,13 +137,63 @@ func (f *File) writeToFile(file *os.File, buff []byte) error {
 type Storage map[string]*File
 
 type ServerConfig struct {
-	UploadDir string // the directory wher all file is being uploaded to
-	Host      string
-	Port      int
-	Protocol  string
+	UploadDir              string // the directory wher all file is being uploaded to
+	Host                   string
+	Port                   int
+	Protocol               string
+	ShutdownTimeoutSeconds int
 }
 
 var uploadDir = "./temp"
+
+type Server struct {
+	httpServer             *http.Server
+	ShutdownTimeoutSeconds int
+}
+
+func NewServer(config *ServerConfig, handler *http.ServeMux) *Server {
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", config.Port),
+		Handler: handler,
+	}
+	return &Server{
+		httpServer:             httpServer,
+		ShutdownTimeoutSeconds: config.ShutdownTimeoutSeconds,
+	}
+}
+
+func (s *Server) Start() error {
+	errorChan := make(chan error, 1)
+	shutdown := make(chan os.Signal, 1)
+
+	go func() {
+		slog.Info("Starting server at", slog.String("Addr", s.httpServer.Addr))
+		// The err != http.ErrServerClosed is important. The error is returned when
+		// the Shutdown method is called to initiate gracefule shutdown, which allows
+		// existing requests to completed before closing down.
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errorChan <- err
+		}
+	}()
+
+	select {
+	case err := <-errorChan:
+		return fmt.Errorf("Fail to start the server. error=%v", err)
+	case sig := <-shutdown:
+		slog.Info("Shutdown signal received: %v", slog.Any("sig", sig))
+		return s.Shutdown()
+	}
+}
+
+// Shutdown gracefully shutdown the server. When the context expires before
+// shutdown is complete, Shutdown returns the context's error but it does not
+// close/cancel the running requests
+func (s *Server) Shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.ShutdownTimeoutSeconds)*time.Second)
+	defer cancel()
+
+	return s.httpServer.Shutdown(ctx)
+}
 
 func buildServeMux(config *ServerConfig) *http.ServeMux {
 	var host, protocol string

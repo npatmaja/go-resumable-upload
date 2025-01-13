@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -484,6 +486,106 @@ func TestPatch(t *testing.T) {
 				uploadOffset := res.Header.Get(HEADER_UPLOAD_OFFSET)
 				if uploadOffset != strconv.Itoa(tt.offset+tt.contentLength) {
 					t.Errorf("PATCH /files got wrong HEAD upload offset, expected=%v. actual=%v", tt.offset+tt.contentLength, uploadOffset)
+				}
+			}
+		})
+	}
+}
+
+func TestGracefulShutdown(t *testing.T) {
+	port := 9090
+	host := fmt.Sprintf("http://%s:%d", "localhost", port)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /fast", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tests := []struct {
+		testName       string
+		clientRequest  func() []*http.Response
+		shutdownDelay  time.Duration
+		expectTimeout  bool
+		timeoutSeconds int
+	}{
+		{
+			testName: "Should complete fast request during shutdown",
+			clientRequest: func() []*http.Response {
+				resp, err := http.Get(fmt.Sprintf("%s/fast", host))
+				if err != nil {
+					t.Fatal("Fail to execute request", err)
+				}
+
+				return []*http.Response{resp}
+			},
+			expectTimeout:  false,
+			shutdownDelay:  100 * time.Millisecond,
+			timeoutSeconds: 5,
+		},
+		{
+			testName: "Should complete slow request during shutdown",
+			clientRequest: func() []*http.Response {
+				resp, err := http.Get(fmt.Sprintf("%s/slow", host))
+				if err != nil {
+					t.Fatal("Fail to execute request", err)
+				}
+
+				return []*http.Response{resp}
+			},
+			expectTimeout:  false,
+			shutdownDelay:  100 * time.Millisecond,
+			timeoutSeconds: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			server := NewServer(&ServerConfig{
+				Port:                   port,
+				ShutdownTimeoutSeconds: tt.timeoutSeconds,
+			}, mux)
+
+			// start server
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				wg.Done()
+				err := server.Start()
+				if err != nil {
+					t.Fatalf("Fail to start server. error=%v", err)
+				}
+			}()
+
+			// walt for the server to be ready
+			time.Sleep(100 * time.Millisecond)
+			var responses []*http.Response
+			go func() {
+				responses = tt.clientRequest()
+			}()
+
+			// shutdown delay
+			time.Sleep(tt.shutdownDelay)
+
+			err := server.Shutdown()
+
+			// assert shutdown behaviour
+			if tt.expectTimeout {
+				if err != context.DeadlineExceeded {
+					t.Errorf("Expected timeout. got=%v", err)
+				} else {
+					if err != nil {
+						t.Errorf("Unexpected shotdown. got=%v", err)
+					}
+				}
+			}
+
+			// verify all requests are completed
+			for _, resp := range responses {
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("Status code is not %v. go=%v", http.StatusOK, resp.StatusCode)
 				}
 			}
 		})
