@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -539,6 +540,20 @@ func TestGracefulShutdown(t *testing.T) {
 			shutdownDelay:  100 * time.Millisecond,
 			timeoutSeconds: 5,
 		},
+		{
+			testName: "Should handler return service unavailable when timeout exceeds",
+			clientRequest: func() []*http.Response {
+				resp, err := http.Get(fmt.Sprintf("%s/slow", host))
+				if err != nil {
+					t.Fatal("Fail to execute request", err)
+				}
+
+				return []*http.Response{resp}
+			},
+			expectTimeout:  true,
+			shutdownDelay:  100 * time.Millisecond,
+			timeoutSeconds: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -575,10 +590,10 @@ func TestGracefulShutdown(t *testing.T) {
 			if tt.expectTimeout {
 				if err != context.DeadlineExceeded {
 					t.Errorf("Expected timeout. got=%v", err)
-				} else {
-					if err != nil {
-						t.Errorf("Unexpected shotdown. got=%v", err)
-					}
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected shutdown. got=%v", err)
 				}
 			}
 
