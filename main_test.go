@@ -541,7 +541,7 @@ func TestGracefulShutdown(t *testing.T) {
 			timeoutSeconds: 5,
 		},
 		{
-			testName: "Should handler return service unavailable when timeout exceeds",
+			testName: "Should return error timeout exceeded when timeout exceeds",
 			clientRequest: func() []*http.Response {
 				resp, err := http.Get(fmt.Sprintf("%s/slow", host))
 				if err != nil {
